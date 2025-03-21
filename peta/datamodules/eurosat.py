@@ -52,9 +52,9 @@ class EuroSATDataModule(pl.LightningDataModule):
             "pin_memory": pin_memory,
         }
 
-        self.train_dir = os.path.join(root, "EuroSAT_splits", "train")
-        self.val_dir = os.path.join(root, "EuroSAT_splits", "validation")
-        self.test_dir = os.path.join(root, "EuroSAT_splits", "test")
+        self.train_dir = os.path.join(root, "eurosat", "train")
+        # self.val_dir = os.path.join(root, "EuroSAT_splits", "validation")
+        self.test_dir = os.path.join(root, "eurosat", "test")
 
         self.train_transform = train_transform
         self.test_transform = test_transform
@@ -62,9 +62,9 @@ class EuroSATDataModule(pl.LightningDataModule):
         self.train_dataset = datasets.ImageFolder(
             self.train_dir, transform=self.train_transform
         )
-        self.val_dataset = datasets.ImageFolder(
-            self.val_dir, transform=self.test_transform
-        )
+        # self.val_dataset = datasets.ImageFolder(
+        #     self.val_dir, transform=self.test_transform
+        # )
         self.test_dataset = datasets.ImageFolder(
             self.test_dir, transform=self.test_transform
         )
@@ -76,18 +76,18 @@ class EuroSATDataModule(pl.LightningDataModule):
         self.classes = [
             idx_to_class[i].replace("_", " ") for i in range(len(idx_to_class))
         ]
-        self.classes = [_pretify_classname(c) for c in self.classes]
+        # self.classes = [_pretify_classname(c) for c in self.classes]
         ours_to_open_ai = {
-            "annual crop": "annual crop land",
-            "forest": "forest",
-            "herbaceous vegetation": "brushland or shrubland",
-            "highway": "highway or road",
-            "industrial area": "industrial buildings or commercial buildings",
-            "pasture": "pasture land",
-            "permanent crop": "permanent crop land",
-            "residential area": "residential buildings or homes or apartments",
-            "river": "river",
-            "sea lake": "lake or sea",
+            "AnnualCrop": "Annual",  # Assuming "Annula" is a typo
+            "Forest": "forest",
+            "HerbaceousVegetation": "brushland or shrubland",
+            "Highway": "highway or road",
+            "Industrial": "industrial buildings or commercial buildings",
+            "Pasture": "pasture land",
+            "PermanentCrop": "permanent crop land",
+            "Residential": "residential buildings or homes or apartments",
+            "River": "river",
+            "SeaLake": "lake or sea"
         }
         for i in range(len(self.classes)):
             self.classes[i] = ours_to_open_ai[self.classes[i]]
@@ -95,8 +95,8 @@ class EuroSATDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(self.train_dataset, shuffle=True, **self.loader_kwargs)
 
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, shuffle=False, **self.loader_kwargs)
+    # def val_dataloader(self):
+    #     return DataLoader(self.val_dataset, shuffle=False, **self.loader_kwargs)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, shuffle=False, **self.loader_kwargs)

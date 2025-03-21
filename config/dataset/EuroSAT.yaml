@@ -2,7 +2,7 @@ name: EuroSAT
 
 datamodule:
   _target_: peta.datamodules.EuroSATDataModule
-  root: data
+  root: ../data/vtab_data
   batch_size: ${batch_size}
   num_workers: ${num_workers}
   pin_memory: false
