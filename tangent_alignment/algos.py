@@ -71,6 +71,37 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
     else:
         logit_scale = clip_model.logit_scale.exp()
 
+
+    # Define the forward function for Jacobian computation
+    def model_forward(param_slice, inputs, text_embeds):
+        # Get the current state dict of the model
+        state_dict = clip_model.vision_model.state_dict()
+        
+        # Update the specific parameter slice in a new state dict
+        full_param = state_dict[name].clone()  # Clone to avoid modifying the original
+        full_param[slice_start:slice_end] = param_slice.reshape(slice_size, full_param.shape[1])
+        state_dict[name] = full_param
+
+
+        # Use functional_call to compute the forward pass without modifying the model in-place
+        from torch.func import functional_call
+        vision_outputs = functional_call(clip_model.vision_model, state_dict, (inputs["pixel_values"],))
+        image_embeds = vision_outputs.pooler_output  # Shape: (batch_size, hidden_size)
+        
+        # Normalize the image embeddings
+        image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+        
+        # Project the embeddings
+        if hasattr(clip_model, 'base_model'):
+            image_embeds = clip_model.base_model.visual_projection(image_embeds)  # Shape: (batch_size, projection_dim)
+        else:
+            image_embeds = clip_model.visual_projection(image_embeds)  # Shape: (batch_size, projection_dim)
+        
+        # Compute logits_per_image
+        logits_per_image = logit_scale * image_embeds @ text_embeds.t()  # Shape: (batch_size, num_classes)
+        
+        return logits_per_image  # Shape: (batch_size, num_classes)
+
     for (name, param), (name_clone, param_clone) in zip(
         clip_model.vision_model.named_parameters(), 
         updated_clip_model.vision_model.named_parameters()
@@ -105,53 +136,24 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                         # One-hot encode labels
                         labels = labels.squeeze()  # Shape: (n,)
                         labels = F.one_hot(labels, num_classes=text_embeds.shape[0]).float().to(images.device)  # Shape: (n, K)
+                        batch_size, output_dim = labels.shape
 
                         with torch.no_grad():
                             outputs = clip_model(**inputs)
                             logits = outputs.logits_per_image
                             logits = logits.detach()
                         
-                        batch_size, output_dim = labels.shape
-
-                        # Define the forward function for Jacobian computation
-                        def model_forward(param_slice, inputs, text_embeds):
-                            # Get the current state dict of the model
-                            state_dict = clip_model.vision_model.state_dict()
-                            
-                            # Update the specific parameter slice in a new state dict
-                            full_param = state_dict[name].clone()  # Clone to avoid modifying the original
-                            full_param[slice_start:slice_end] = param_slice.reshape(slice_size, full_param.shape[1])
-                            state_dict[name] = full_param
-
-                            # Use functional_call to compute the forward pass without modifying the model in-place
-                            from torch.func import functional_call
-                            vision_outputs = functional_call(clip_model.vision_model, state_dict, (inputs["pixel_values"],))
-                            image_embeds = vision_outputs.pooler_output  # Shape: (batch_size, hidden_size)
-                            
-                            # Normalize the image embeddings
-                            image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
-                            
-                            # Project the embeddings
-                            if hasattr(clip_model, 'base_model'):
-                                image_embeds = clip_model.base_model.visual_projection(image_embeds)  # Shape: (batch_size, projection_dim)
-                            else:
-                                image_embeds = clip_model.visual_projection(image_embeds)  # Shape: (batch_size, projection_dim)
-                            
-                            # Compute logits_per_image
-                            logits_per_image = logit_scale * image_embeds @ text_embeds.t()  # Shape: (batch_size, num_classes)
-                            
-                            return logits_per_image  # Shape: (batch_size, num_classes)
 
                         # Compute the Jacobian slice by slice for the parameter
                         from torch.func import jacrev
                         param_slice = param[slice_start:slice_end].reshape(slice_size, param.shape[1])  # Shape: (slice_size, param.shape[1])
                         param_slice = param_slice.reshape(-1)  # Flatten for jacrev: (slice_param_size,)
                         param_slice.requires_grad_(True)
-
+                        # import pdb; pdb.set_trace()
                         jacobian_fn = jacrev(model_forward, argnums=0)  # Differentiate w.r.t. param_slice
                         jacobian = jacobian_fn(param_slice, inputs, text_embeds)  # Shape: (batch_size, output_dim, slice_param_size)
+                        # import pdb; pdb.set_trace()
                         A_matrix_slice = jacobian.reshape(batch_size * output_dim, -1)  # Shape: (batch_size * output_dim, slice_param_size)
-                        import pdb; pdb.set_trace()
 
                         # After accumulating A_matrix_slice for the batch
                         # Compute b_vector = logits - labels
@@ -162,8 +164,21 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                         global_At_b.add_(A_matrix_slice.T @ b_vector)       # Shape: (p,)
                         
                         # Clean up
-                        del A_matrix_slice, b_vector, jacobian
+                        # Delete all intermediate tensors
+                        del A_matrix_slice, b_vector, jacobian, param_slice, jacobian_fn
+                        del inputs, labels, logits, outputs
+                        # Set variables to None to ensure no references persist
+                        A_matrix_slice, b_vector, jacobian, param_slice, jacobian_fn = None, None, None, None, None
+                        inputs, labels, logits, outputs = None, None, None, None
+                        # Clear the computational graph by detaching tensors (if any still require gradients)
+                        if global_At_A.requires_grad:
+                            global_At_A = global_At_A.detach()
+                        if global_At_b.requires_grad:
+                            global_At_b = global_At_b.detach()
+                        # Clear GPU cache
                         torch.cuda.empty_cache()
+
+
                 
                     # After processing all batches for this slice, solve the system
                     # Add small regularization to ensure numerical stability
@@ -203,7 +218,6 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
 
                         # Reshape to check rank
                         temp_matrix = temp_solution.reshape(slice_size, param.shape[1])
-                        import pdb; pdb.set_trace()
                         rank = torch.linalg.matrix_rank(temp_matrix)
 
                         cumulative_rank += rank
@@ -230,7 +244,7 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                     # Clean up
                     del global_At_A, global_At_b, eigenvalues, eigenvectors, w_update
                     torch.cuda.empty_cache()
-                    
+                    import pdb; pdb.set_trace()
                     print(f"Slice {slice_idx+1} completed. Final rank: {cumulative_rank}")
                     print(f"Time taken: {time.time() - start_time:.2f} seconds")
 
