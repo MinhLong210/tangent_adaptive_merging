@@ -226,7 +226,7 @@ def main(cfg: DictConfig):
     step_idx = 0
     clip_vision_model.train()
     while step_idx < cfg.max_steps:
-        updated_clip_model = closed_form_linear_clip(clip_model, clip_processor, train_loader, text, cfg)
+        updated_clip_model = closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text_embeds, cfg)
         
         test_acc = 0
         total_samples = 0
