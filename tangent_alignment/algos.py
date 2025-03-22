@@ -100,36 +100,70 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, conf
                         labels = labels.squeeze()  # Shape: (n,)
                         labels = F.one_hot(labels, num_classes=10).float()  # Shape: (n, K)
 
-                        # Forward pass of pretrained model
-                        with torch.no_grad():
-                            outputs = clip_model(**inputs)
-                            logits = outputs.logits_per_image  # Shape: (batch_size, num_classes)
-                        batch_size, output_dim = logits.shape
+                        
+                        batch_size, output_dim = labels.shape
                         # grad_output = torch.zeros_like(logits)
                         
                         # Batched computation of A matrix
-                        grads_list = []
-                        for b_idx in range(batch_size):
-                            for i in range(output_dim):
-                                grad_output = torch.zeros_like(logits[b_idx])
-                                grad_output[i] = 1.0
-                                grads = torch.autograd.grad(
-                                    logits[b_idx], param, grad_output, 
-                                    retain_graph=True  # Only retain if needed
-                                )[0]
-                                grads_list.append(grads[slice_start:slice_end, :].flatten().detach())
-                        grads = None
-                        # Construct A_matrix_slice from grads_list
-                        A_matrix_slice = torch.stack(grads_list, dim=0).to(images.device) # Shape: (n * K, p)
+                        # Forward pass of pretrained model
+                        # with torch.no_grad():
+                        #     outputs = clip_model(**inputs)
+                        #     logits = outputs.logits_per_image  # Shape: (batch_size, num_classes)
+                        # grads_list = []
+                        # for b_idx in range(batch_size):
+                        #     for i in range(output_dim):
+                        #         grad_output = torch.zeros_like(logits[b_idx])
+                        #         grad_output[i] = 1.0
+                        #         grads = torch.autograd.grad(
+                        #             logits[b_idx], param, grad_output, 
+                        #             retain_graph=True  # Only retain if needed
+                        #         )[0]
+                        #         grads_list.append(grads[slice_start:slice_end, :].flatten().detach())
+                        # grads = None
+                        # # Construct A_matrix_slice from grads_list
+                        # A_matrix_slice = torch.stack(grads_list, dim=0).to(images.device) # Shape: (n * K, p)
 
                         # Parallel ====> This gives 0 Jacobian
-                        # def model_forward(param, inputs):
-                        #     outputs = clip_model(**inputs).logits_per_image  # Shape: (batch_size, num_classes)
-                        #     return outputs  # Shape: (batch_size, num_classes)
-                        # # Compute the Jacobian: ∂logits/∂param
-                        # jacobian_fn = jacrev(model_forward, argnums=0)  # Differentiate w.r.t. param
-                        # jacobian = jacobian_fn(param, inputs)  # Shape: (batch_size, output_dim, param_shape)
-                        # A_matrix_slice = jacobian[:, :, slice_start:slice_end].reshape(batch_size * output_dim, -1)
+                        # Define the forward function for Jacobian computation
+                        def model_forward(param, inputs):
+                            # Get the current state dict of the model
+                            state_dict = clip_model.vision_model.state_dict()
+                            
+                            # Update the specific parameter slice in a new state dict
+                            full_param = state_dict[name].clone()  # Clone to avoid modifying the original
+                            # full_param[slice_start:slice_end] = param_slice.reshape(slice_size, full_param.shape[1])
+                            full_param = param
+                            state_dict[name] = full_param
+
+                            # Use functional_call to compute the forward pass without modifying the model in-place
+                            from torch.func import functional_call
+                            vision_outputs = functional_call(clip_model.vision_model, state_dict, (inputs["pixel_values"],))  # Pass pixel_values as a positional argument
+                            # Extract the pooler output (or last hidden state) from vision_outputs
+                            image_embeds = vision_outputs.pooler_output  # Shape: (batch_size, hidden_size)
+                            
+                            # Normalize the image embeddings (as done in CLIP's forward pass)
+                            image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+                            
+                            # Get the text embeddings (we can use the original model for this part since we're not modifying text parameters)
+                            text_input = clip_processor(text, return_tensors="pt", padding=True).to(image_embeds.device)
+                            text_embeds = clip_model.get_text_features(**text_input)
+                            text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+                            
+                            # Project the embeddings
+                            image_embeds = clip_model.visual_projection(image_embeds)  # Shape: (batch_size, projection_dim)
+                            text_embeds = clip_model.text_projection(text_embeds)  # Shape: (num_classes, projection_dim)
+                            
+                            # Compute logits_per_image
+                            logit_scale = clip_model.logit_scale.exp()
+                            logits_per_image = logit_scale * image_embeds @ text_embeds.t()  # Shape: (batch_size, num_classes)
+                            
+                            return logits_per_image  # Shape: (batch_size, num_classes)outputs = functional_call(clip_model.vision_model, state_dict, (), inputs["pixel_values"]).logits_per_image  # Shape: (batch_size, num_classes)
+                            
+                        # Compute the Jacobian: ∂logits/∂param
+                        jacobian_fn = jacrev(model_forward, argnums=0)  # Differentiate w.r.t. param
+                        jacobian = jacobian_fn(param, inputs)  # Shape: (batch_size * output_dim, param_shape)
+                        A_matrix_slice = jacobian[:, :, slice_start:slice_end].reshape(batch_size * output_dim, -1)
+                        import pdb; pdb.set_trace()
 
 
                         ######################################################## Step 2: Closed form solution ###############################################

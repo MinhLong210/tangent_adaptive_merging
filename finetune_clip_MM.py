@@ -221,6 +221,7 @@ def main(cfg: DictConfig):
     text_input = clip_processor(text, return_tensors="pt", padding=True)
     text_embeds = clip_model.get_text_features(**text_input)
 
+
     # finetuning
     step_idx = 0
     clip_vision_model.train()
@@ -235,11 +236,12 @@ def main(cfg: DictConfig):
 
         for batch_idx, batch in enumerate(tqdm(test_loader)):
             images, labels = batch
-            images, labels = images.to(updated_clip_model.device), labels.to(updated_clip_model.device)
+            updated_clip_model = updated_clip_model.to(images.device)
 
             # Compute image embeddings
             image_embeds = updated_clip_model.get_image_features(pixel_values=images)
             image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)  # Normalize
+            text_embeds = text_embeds.to(images.device)
 
             # Compute similarity logits
             logit_scale = updated_clip_model.logit_scale.exp()
