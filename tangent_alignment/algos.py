@@ -193,43 +193,48 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                     eigenvalues = eigenvalues[idx]
                     eigenvectors = eigenvectors[:, idx]
                     
-                    # Project At_b onto eigenvectors
-                    a_coeff = eigenvectors.T @ global_At_b
+                    if config.target_rank > 0:
+                        # Project At_b onto eigenvectors
+                        a_coeff = eigenvectors.T @ global_At_b
+                        
+                        # Selection criterion: a_coeff^2 / eigenvalues
+                        selection_criterion = (a_coeff ** 2) / eigenvalues
+                        
+                        # Sort by selection criterion in descending order
+                        sorted_indices = torch.argsort(selection_criterion, descending=True)
+
+                        # Greedily select eigenvectors based on sorted criterion
+                        target_rank = config.target_rank if hasattr(config, 'target_rank') else min(8, num_slices)
+                        cumulative_rank = 0
+                        selected_indices = []
+
+                        for idx in sorted_indices:
+                            # Add the eigenvector corresponding to this index
+                            selected_indices.append(idx.item())
+
+                            # Compute temporary solution with the selected eigenvectors
+                            E_t_temp = eigenvectors[:, selected_indices]
+                            S_t_inv_temp = torch.diag(1.0 / eigenvalues[selected_indices])
+                            temp_solution = E_t_temp @ S_t_inv_temp @ (E_t_temp.T @ global_At_b)
+
+                            # Reshape to check rank
+                            temp_matrix = temp_solution.reshape(slice_size, param.shape[1])
+                            rank = torch.linalg.matrix_rank(temp_matrix)
+
+                            cumulative_rank += rank
+                            if cumulative_rank >= target_rank:
+                                break
+                        
+                        # Compute final closed-form solution with selected components
+                        E_t = eigenvectors[:, selected_indices]  # Selected eigenvectors
+                        S_t_inv = torch.diag(1.0/eigenvalues[selected_indices])  # Inverse of selected eigenvalues
+                        
+                        # w_update = E_t @ S_t^-1 @ E_t^T @ global_At_b
+                        w_update = E_t @ S_t_inv @ (E_t.T @ global_At_b)
                     
-                    # Selection criterion: a_coeff^2 / eigenvalues
-                    selection_criterion = (a_coeff ** 2) / eigenvalues
-                    
-                    # Sort by selection criterion in descending order
-                    sorted_indices = torch.argsort(selection_criterion, descending=True)
-
-                    # Greedily select eigenvectors based on sorted criterion
-                    target_rank = config.target_rank if hasattr(config, 'target_rank') else min(8, num_slices)
-                    cumulative_rank = 0
-                    selected_indices = []
-
-                    for idx in sorted_indices:
-                        # Add the eigenvector corresponding to this index
-                        selected_indices.append(idx.item())
-
-                        # Compute temporary solution with the selected eigenvectors
-                        E_t_temp = eigenvectors[:, selected_indices]
-                        S_t_inv_temp = torch.diag(1.0 / eigenvalues[selected_indices])
-                        temp_solution = E_t_temp @ S_t_inv_temp @ (E_t_temp.T @ global_At_b)
-
-                        # Reshape to check rank
-                        temp_matrix = temp_solution.reshape(slice_size, param.shape[1])
-                        rank = torch.linalg.matrix_rank(temp_matrix)
-
-                        cumulative_rank += rank
-                        if cumulative_rank >= target_rank:
-                            break
-                    
-                    # Compute final closed-form solution with selected components
-                    E_t = eigenvectors[:, selected_indices]  # Selected eigenvectors
-                    S_t_inv = torch.diag(1.0/eigenvalues[selected_indices])  # Inverse of selected eigenvalues
-                    
-                    # w_update = E_t @ S_t^-1 @ E_t^T @ global_At_b
-                    w_update = E_t @ S_t_inv @ (E_t.T @ global_At_b)
+                    else:
+                        # import pdb; pdb.set_trace()
+                        w_update = eigenvectors @ torch.diag(1.0/eigenvalues) @ (eigenvectors.T @ global_At_b)
                     
                     # Reshape to match parameter dimensions
                     w_update = w_update.reshape(slice_size, param.shape[1])
@@ -244,8 +249,11 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                     # Clean up
                     del global_At_A, global_At_b, eigenvalues, eigenvectors, w_update
                     torch.cuda.empty_cache()
-                    import pdb; pdb.set_trace()
-                    print(f"Slice {slice_idx+1} completed. Final rank: {cumulative_rank}")
+
+                    if config.target_rank > 0:
+                        print(f"Slice {slice_idx+1} completed. Final rank: {cumulative_rank}")
+                    else:
+                        print("Full rank solution")
                     print(f"Time taken: {time.time() - start_time:.2f} seconds")
 
     # Return the updated model

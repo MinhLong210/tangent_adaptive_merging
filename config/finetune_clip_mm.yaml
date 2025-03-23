@@ -24,7 +24,7 @@ lora_config:
 linearized_lora: false
 
 slice_size: 32
-target_rank: 30
+target_rank: 0
 
 # data
 datamodule: ${dataset.datamodule}
