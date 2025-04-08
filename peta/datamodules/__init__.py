@@ -8,3 +8,4 @@ from .resisc45 import RESISC45DataModule
 from .stanford_cars import StanfordCarsDataModule
 from .sun397 import SUN397DataModule
 from .svhn import SVHNDataModule
+from .cifar10 import CIFAR10DataModule

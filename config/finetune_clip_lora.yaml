@@ -13,8 +13,9 @@ finetuning_mode: lora # only for logging: 'standard', 'lora', 'l_lora'
 lora_config:
   _target_: peft.LoraConfig
   target_modules:
-    - v_porj
-    - q_proj
+    # - v_porj
+    # - q_proj
+    - encoder.layers.11.self_attn.q_proj
   inference_mode: false
   r: 16
   lora_alpha: 32

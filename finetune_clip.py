@@ -58,6 +58,8 @@ from peta.models.clip import (
 from peta.models.LinearizedModel import LinearizedModelWraper
 from peta.optim import CosineAnnealingWithWarmup
 from peta.utils.logging import TitledLog, setup_colorlogging
+import os
+import csv
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ def setup_fabric(cfg: DictConfig):
     from lightning.fabric.loggers.tensorboard import TensorBoardLogger
 
     logger = TensorBoardLogger(
-        root_dir=Path("logs") / cfg.model_name / cfg.dataset_name,
+        root_dir=Path("logs_l2_loss") / cfg.model_name / cfg.dataset_name,
         name=cfg.finetuning_mode,
     )
     fabric = L.Fabric(**cfg.fabric, loggers=logger)
@@ -221,54 +223,68 @@ def main(cfg: DictConfig):
     # finetuning
     step_idx = 0
     clip_vision_model.train()
+    csv_file = os.path.join(fabric.logger.log_dir, "train_stats.csv")
+    with open(csv_file, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["step_idx", "loss", "learning_rate", "train_accuracy", "test_accuracy"])
+
     while step_idx < cfg.max_steps:
         for batch_idx, batch in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
             images, labels = batch
-            # image_inputs = clip_processor(images=images, return_tensors="pt", padding=True)
             image_embeds = clip_model.get_image_features(pixel_values=images)
 
-            # normalized features
+            # Normalize features
             image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
             text_embeds = text_embeds.to(image_embeds.device)
             text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
 
-            # cosine similarity as logits
+            # Cosine similarity as logits
             logit_scale = clip_model.logit_scale.exp().item()
             logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
             logits_per_image = logits_per_text.t()
 
-            loss = F.cross_entropy(logits_per_image, labels)
+            # loss = F.cross_entropy(logits_per_image, labels)
 
+            labels_ = F.one_hot(labels, num_classes=logits_per_image.shape[1]).float()
+            loss = F.mse_loss(logits_per_image.softmax(dim=1), labels_) # Use quadratic regression loss
             loss.backward()
             optimizer.step()
             lr_scheduler.step(step_idx)
             step_idx += 1
 
+            # Compute train accuracy
+            train_accuracy = logits_per_image.argmax(dim=1).eq(labels).float().mean().item()
+
+            # Compute test accuracy every 100 steps
+            if step_idx % 100 == 0:
+                clip_model.eval()
+                test_correct, test_total = 0, 0
+                with torch.no_grad():
+                    for test_images, test_labels in test_loader:
+                        test_image_embeds = clip_model.get_image_features(pixel_values=test_images)
+                        test_image_embeds = test_image_embeds / test_image_embeds.norm(p=2, dim=-1, keepdim=True)
+
+                        test_logits = torch.matmul(text_embeds, test_image_embeds.t()) * logit_scale
+                        test_predictions = test_logits.t().argmax(dim=1)
+                        test_correct += (test_predictions == test_labels).sum().item()
+                        test_total += test_labels.size(0)
+
+                test_accuracy = test_correct / test_total
+                clip_model.train()
+            else:
+                test_accuracy = None  # Skip logging test accuracy for other iterations
+
             print(
-                f"[step_idx:{step_idx}] loss: {loss.item():.2f}, lr: {lr_scheduler.get_lrs()[0]:.2e}, acc: {logits_per_image.argmax(dim=1).eq(labels).float().mean().item():.2f}"
+                f"[step_idx:{step_idx}] loss: {loss.item():.2f}, "
+                f"lr: {lr_scheduler.get_lrs()[0]:.2e}, "
+                f"train acc: {train_accuracy:.2f}, test acc: {test_accuracy:.2f}" if test_accuracy is not None else ""
             )
-            if step_idx >= cfg.max_steps:
-                # save trainable parameters
-                os.makedirs(
-                    os.path.join(fabric.logger.log_dir, "checkpoints"), exist_ok=True
-                )
-                torch.save(
-                    # save trainable parameters
-                    dict(
-                        (k, p)
-                        for k, p in clip_vision_model.named_parameters()
-                        if p.requires_grad
-                    ),
-                    os.path.join(
-                        os.path.join(
-                            fabric.logger.log_dir,
-                            "checkpoints",
-                            f"vision_model-step={step_idx}.pth",
-                        )
-                    ),
-                )
-                break
+
+            # Log training stats to CSV
+            with open(csv_file, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow([step_idx, loss.item(), lr_scheduler.get_lrs()[0], train_accuracy, test_accuracy or "NA"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,39 @@
+model:
+  name: ViT-B-16
+  model_name_or_path: openai/clip-vit-base-patch16
+  batch_size: 64
+  input_size: 224
+dataset:
+  name: EuroSAT
+  datamodule:
+    _target_: peta.datamodules.EuroSATDataModule
+    root: ../data/vtab_data
+    batch_size: ${batch_size}
+    num_workers: ${num_workers}
+    pin_memory: false
+    train_transform: null
+    test_transform: null
+seed: 42
+fast_debug_dev: false
+model_name: ${model.name}
+finetuning_mode: l_lora
+lora_config:
+  _target_: peft.LoraConfig
+  target_modules:
+  - encoder.layers.11.self_attn.q_proj
+  inference_mode: false
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+linearized_lora: true
+datamodule: ${dataset.datamodule}
+dataset_name: ${dataset.name}
+num_workers: 12
+batch_size: ???
+learning_rate: 1.0e-05
+warmup_steps: 600
+max_steps: 6000
+weight_decay: 0.1
+fabric:
+  accelerator: gpu
+  devices: 1

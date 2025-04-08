@@ -14,7 +14,7 @@ class MNISTDataModule(pl.LightningDataModule):
         root: str,
         batch_size: int,
         num_workers: int,
-        download: bool = False,
+        download: bool = True,
         pin_memory: bool = True,
         train_transform=None,
         test_transform=None,

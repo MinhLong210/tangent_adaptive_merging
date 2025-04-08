@@ -36,7 +36,7 @@ from peta.utils.logging import TitledLog, setup_colorlogging
 
 import copy
 import time
-from torch.func import jacrev
+from torch.func import jacrev, vmap
 
 def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text_embeds, config):
     """
@@ -100,7 +100,7 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
         # Compute logits_per_image
         logits_per_image = logit_scale * image_embeds @ text_embeds.t()  # Shape: (batch_size, num_classes)
         
-        return logits_per_image  # Shape: (batch_size, num_classes)
+        return logits_per_image.softmax(dim=1)  # Shape: (batch_size, num_classes)
 
     for (name, param), (name_clone, param_clone) in zip(
         clip_model.vision_model.named_parameters(), 
@@ -109,7 +109,7 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
         for target in target_modules:
             if target in name and "lora" not in name and "bias" not in name:
                 print(name)
-                param.requires_grad_(True)
+                # param.requires_grad_(True)
 
                 # Slice params
                 slice_size = config.slice_size
@@ -125,7 +125,7 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
 
                     # Initialize accumulated terms for each slice
                     global_At_A = torch.zeros((slice_param_size, slice_param_size)).to(images_temp.device)
-                    global_At_b = torch.zeros(slice_param_size).to(images_temp.device)       
+                    global_At_b = torch.zeros(slice_param_size).to(images_temp.device)     
                     
                     for batch_idx, batch in enumerate(tqdm(train_loader)):
                         images, labels = batch
@@ -140,20 +140,24 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
 
                         with torch.no_grad():
                             outputs = clip_model(**inputs)
-                            logits = outputs.logits_per_image
+                            logits = outputs.logits_per_image.softmax(dim=1)
                             logits = logits.detach()
                         
 
                         # Compute the Jacobian slice by slice for the parameter
-                        from torch.func import jacrev
                         param_slice = param[slice_start:slice_end].reshape(slice_size, param.shape[1])  # Shape: (slice_size, param.shape[1])
                         param_slice = param_slice.reshape(-1)  # Flatten for jacrev: (slice_param_size,)
-                        param_slice.requires_grad_(True)
-                        # import pdb; pdb.set_trace()
-                        jacobian_fn = jacrev(model_forward, argnums=0)  # Differentiate w.r.t. param_slice
-                        jacobian = jacobian_fn(param_slice, inputs, text_embeds)  # Shape: (batch_size, output_dim, slice_param_size)
+                        jacobian_fn = jacrev(model_forward)  # Differentiate w.r.t. param_slice
+                        jacobian = jacobian_fn(param_slice, inputs, text_embeds)  # Shape: (batch_size, output_dim, slice_param_size). This is extremely memory extensive due to having to store the computational graph
+                        # jacobian = torch.zeros((batch_size, output_dim, slice_param_size)).to(images_temp.device)
                         # import pdb; pdb.set_trace()
                         A_matrix_slice = jacobian.reshape(batch_size * output_dim, -1)  # Shape: (batch_size * output_dim, slice_param_size)
+
+
+                        # Replace jacrev call
+                        jacobian = finite_diff_jacobian(param_slice, inputs, text_embeds)
+                        A_matrix_slice = jacobian.reshape(batch_size * output_dim, -1)
+
 
                         # After accumulating A_matrix_slice for the batch
                         # Compute b_vector = logits - labels
@@ -245,6 +249,8 @@ def closed_form_linear_clip(clip_model, clip_processor, train_loader, text, text
                             param_clone.data[slice_start:slice_end] += w_update
                         else:
                             print(f"Shape mismatch: {param_clone.data[slice_start:slice_end].shape} vs {w_update.shape}")
+
+                        # param_clone.data[slice_start:slice_end] +=0
                     
                     # Clean up
                     del global_At_A, global_At_b, eigenvalues, eigenvectors, w_update

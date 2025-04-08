@@ -1,0 +1,10 @@
+name: CIFAR10
+
+datamodule:
+  _target_: peta.datamodules.CIFAR10DataModule
+  root: ../data
+  batch_size: ${batch_size}
+  num_workers: ${num_workers}
+  pin_memory: false
+  train_transform: null
+  test_transform: null
