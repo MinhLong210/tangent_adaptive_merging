@@ -27,4 +27,7 @@
 
 # CUDA_VISIBLE_DEVICES=0 python finetune_clip.py --config-name finetune_clip_l_lora model=ViT-B-16 dataset=EuroSAT
 # CUDA_VISIBLE_DEVICES=1 python finetune_clip.py --config-name finetune_clip_lora model=ViT-B-16 dataset=EuroSAT
+
+
 CUDA_VISIBLE_DEVICES=0 python finetune_clip_MM.py --config-name finetune_clip_mm model=ViT-B-16 dataset=CIFAR10 
+# CUDA_VISIBLE_DEVICES=0 python finetune_clip.py --config-name finetune_clip_l_lora model=ViT-B-16 dataset=CIFAR10

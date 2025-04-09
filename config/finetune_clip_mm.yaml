@@ -23,7 +23,7 @@ lora_config:
   lora_dropout: 0.1
 linearized_lora: false
 
-slice_size: 64
+slice_size: 32
 target_rank: 32
 
 # data
