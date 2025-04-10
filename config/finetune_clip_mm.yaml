@@ -24,6 +24,7 @@ lora_config:
 linearized_lora: false
 
 slice_size: 32
+sketch_size: 1000
 target_rank: 32
 
 # data
